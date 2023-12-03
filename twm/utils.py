@@ -7,6 +7,7 @@ import torch
 from torch import nn, optim
 from ale_py.roms.utils import rom_name_to_id
 from ale_py.env.gym import AtariEnv
+
 from wandb.sdk.data_types.base_types.wb_value import WBValue
 
 
@@ -168,6 +169,26 @@ def create_atari_env(game, noop_max=30, frame_skip=4, frame_stack=4, frame_size=
     env = gym.wrappers.TimeLimit(env, max_episode_steps=time_limit)
     return env
 
+def create_d4rl_env(game, render_mode=None):
+    env = gym.make(game)
+    env = D4RLEnvWrapper(env)
+    # env = AtariEnv(rom_name_to_id(game), frameskip=1, repeat_action_probability=0.0)
+    # env.spec = gym.spec(game + 'NoFrameskip-v4')  # required for AtariPreprocessing
+    # has_fire_action = env.get_action_meanings()[1] == 'FIRE'
+    # env = gym.wrappers.AtariPreprocessing(
+    #     env, noop_max=0 if has_fire_action else noop_max, frame_skip=frame_skip, screen_size=frame_size,
+    #     terminal_on_life_loss=False, grayscale_obs=grayscale)
+    # if has_fire_action:
+    #     env = FireAfterLifeLoss(env)
+    #     if noop_max > 0:
+    #         env = NoopStart(env, noop_max)  # noops after fire
+    # if episodic_lives:
+    #     # return done when a life is lost, but don't reset environment until no lives are left
+    #     env = EpisodicLives(env)
+    # env = gym.wrappers.FrameStack(env, frame_stack)
+    # env = gym.wrappers.TimeLimit(env, max_episode_steps=time_limit)
+    return env
+
 
 def create_vector_env(num_envs, env_fn):
     if num_envs == 1:
@@ -299,6 +320,17 @@ class NoopStart(gym.Wrapper):
             if terminated or truncated:
                 obs, reset_info = self.env.reset(seed=seed, options=options)
         return obs, reset_info
+
+class D4RLEnvWrapper(gym.Wrapper):
+    # https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.n = np.prod(self.action_space.shape)
+
+    def get_action_meanings(self):
+        if self.spec.id == 'Hopper-v4':
+            return ['Thigh Joint','Leg Joint','Foot Joint']
 
 
 @torch.no_grad()

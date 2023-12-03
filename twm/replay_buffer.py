@@ -24,7 +24,7 @@ class ReplayBuffer:
 
         self.obs = torch.zeros((capacity + 1,) + initial_obs.shape, dtype=initial_obs.dtype, device=device)
         self.obs[0] = initial_obs
-        self.actions = torch.zeros(capacity, dtype=torch.long, device=device)
+        self.actions = torch.zeros((capacity,) + self.env.action_space.shape, dtype=torch.long, device=device)
         self.rewards = torch.zeros(capacity, dtype=torch.float, device=device)
         self.terminated = torch.zeros(capacity, dtype=torch.bool, device=device)
         self.truncated = torch.zeros(capacity, dtype=torch.bool, device=device)

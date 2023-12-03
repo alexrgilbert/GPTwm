@@ -1,3 +1,11 @@
+import debugpy
+try:
+	debugpy.listen(('localhost', 5678))
+	print('Listening for incoming debug connection on local port 5678...')
+	debugpy.wait_for_client()
+except:
+	print('WARNING: Failed to find incoming debug connection on local port 5678...')
+
 import argparse
 import random
 from copy import deepcopy

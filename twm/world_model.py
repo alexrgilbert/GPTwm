@@ -143,24 +143,39 @@ class ObservationModel(nn.Module):
         norm = config['obs_norm']
         dropout_p = config['obs_dropout']
 
-        num_channels = config['env_frame_stack']
-        if not config['env_grayscale']:
-            num_channels *= 3
+        # num_channels = config['env_frame_stack']
+        # if not config['env_grayscale']:
+        #     num_channels *= 3
+        num_channels = config['env_num_channels']
 
-        self.encoder = nn.Sequential(
-            nets.CNN(num_channels, [h, h * 2, h * 4], h * 8,
-                     [4, 4, 4, 4], [2, 2, 2, 2], [0, 0, 0, 0], activation, norm=norm, post_activation=True),
-            nn.Flatten(),
-            nets.MLP((h * 8) * 2 * 2, [512, 512], self.z_dim, activation, norm=norm, dropout_p=dropout_p)
-        )
+        if config['env_suite'] == 'atari':
+            self.encoder = nn.Sequential(
+                nets.CNN(num_channels, [h, h * 2, h * 4], h * 8,
+                        [4, 4, 4, 4], [2, 2, 2, 2], [0, 0, 0, 0], activation, norm=norm, post_activation=True),
+                nn.Flatten(),
+                nets.MLP((h * 8) * 2 * 2, [512, 512], self.z_dim, activation, norm=norm, dropout_p=dropout_p)
+            )
+        
 
-        # no norm here
-        self.decoder = nn.Sequential(
-            nets.MLP(self.z_dim, [], (h * 16) * 1 * 1, activation, dropout_p=dropout_p, post_activation=True),
-            nn.Unflatten(1, (h * 16, 1, 1)),
-            nets.TransposeCNN(h * 16, [h * 4, h * 2, h], num_channels, [5, 5, 6, 6], [2, 2, 2, 2], [0, 0, 0, 0],
-                              activation, final_bias_init=0.5)
-        )
+            # no norm here
+            self.decoder = nn.Sequential(
+                nets.MLP(self.z_dim, [], (h * 16) * 1 * 1, activation, dropout_p=dropout_p, post_activation=True),
+                nn.Unflatten(1, (h * 16, 1, 1)),
+                nets.TransposeCNN(h * 16, [h * 4, h * 2, h], num_channels, [5, 5, 6, 6], [2, 2, 2, 2], [0, 0, 0, 0],
+                                activation, final_bias_init=0.5)
+            )
+
+        elif config['env_suite'] == 'd4rl':
+            self.encoder = nn.Sequential(
+                self.MLP(num_channels,[h,h,h,h], self.z_dim, activation, norm=norm, dropout_p=dropout_p)
+            )
+            self.decoder = nn.Sequential(
+                self.MLP(self.z_dim,[h,h,h,h], h, activation, norm=norm, dropout_p=dropout_p),
+                self.MLP(h,[], num_channels, 'none', norm='none', dropout_p=dropout_p)
+            )
+        else:
+            raise NotImplementedError(f'Invalid Environment Suite: {config["env_suite"]}')
+
 
     @staticmethod
     def create_z_dist(logits, temperature=1):

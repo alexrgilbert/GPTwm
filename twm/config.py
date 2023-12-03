@@ -18,16 +18,7 @@ CONFIGS['default'] = {
     'final_eval_episodes': 100,
 
     # environment
-    'env_frame_size': 64,
-    'env_frame_skip': 4,
-    'env_frame_stack': 4,
-    'env_grayscale': True,
-    'env_noop_max': 30,
-    'env_time_limit': 27000,
-    'env_episodic_lives': True,
-    'env_reward_transform': 'tanh',
-    'env_discount_factor': 0.99,
-    'env_discount_lambda': 0.95,
+    'env_suite': 'd4rl',
 
     # world model
     'wm_batch_size': 100,
@@ -97,3 +88,32 @@ CONFIGS['default'] = {
     'critic_grad_clip': 1,
     'critic_target_interval': 1
 }
+
+
+ENV_CONFIGS = {
+    'atari': {
+        'env_frame_size': 64,
+        'env_frame_skip': 4,
+        'env_frame_stack': 4, 
+        'env_grayscale': True,
+        'env_num_channels': 4, # frame_stack * (3 * ~env_grayscale)
+        'env_noop_max': 30,
+        'env_time_limit': 27000,
+        'env_episodic_lives': True,
+        'env_reward_transform': 'tanh',
+        'env_discount_factor': 0.99,
+        'env_discount_lambda': 0.95,
+    },
+    'd4rl': {
+        'env_num_channels': 11, # np.prod(observation_space.shape)
+        'env_render_mode': 'rgb_array',
+        'env_reward_transform': 'tanh',
+        'env_discount_factor': 0.99,
+        'env_discount_lambda': 0.95,
+        'obs_channels': 1024,
+        'obs_act': 'silu',
+        'obs_norm': 'layer_norm',
+    },
+}
+
+CONFIGS['default'].update(ENV_CONFIGS.get(CONFIGS['default']['env_suite']))

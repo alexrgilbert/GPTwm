@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import time
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -26,7 +27,7 @@ class Trainer:
         self.env = self._create_env_from_config(config)
         self.replay_buffer = ReplayBuffer(config, self.env)
 
-        num_actions = self.env.action_space.n
+        num_actions = np.prod(self.env.action_space.shape)
         self.action_meanings = self.env.get_action_meanings()
         self.agent = Agent(config, num_actions).to(config['model_device'])
 
@@ -56,10 +57,13 @@ class Trainer:
 
     @staticmethod
     def _create_env_from_config(config, eval=False):
-        noop_max = 0 if eval else config['env_noop_max']
-        env = utils.create_atari_env(
-            config['game'], noop_max, config['env_frame_skip'], config['env_frame_stack'],
-            config['env_frame_size'], config['env_episodic_lives'], config['env_grayscale'], config['env_time_limit'])
+        if config['env_suite'] == 'atari':
+            noop_max = 0 if eval else config['env_noop_max']
+            env = utils.create_atari_env(
+                config['game'], noop_max, config['env_frame_skip'], config['env_frame_stack'],
+                config['env_frame_size'], config['env_episodic_lives'], config['env_grayscale'], config['env_time_limit'])
+        elif config['env_suite'] == 'd4rl':
+            env = utils.create_d4rl_env(config['game'], config['env_render_mode'])
         if eval:
             env = utils.NoAutoReset(env)  # must use options={'force': True} to really reset
         return env
@@ -122,7 +126,7 @@ class Trainer:
 
         # prefill the buffer with randomly collected data
         random_policy = lambda index: replay_buffer.sample_random_action()
-        for _ in range(config['buffer_prefill'] - 1):
+        for _ in tqdm(range(config['buffer_prefill'] - 1), desc=f'Prefilling buffer (random policy)'):
             replay_buffer.step(random_policy)
             metrics = {}
             utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
@@ -151,43 +155,50 @@ class Trainer:
         train_every = (replay_buffer.capacity - config['buffer_prefill']) / num_batches
 
         step_counter = 0
-        while replay_buffer.size < replay_buffer.capacity:
-            # collect data in real environment
-            collect_policy = self._create_buffer_obs_policy()
-            should_log = False
-            while step_counter <= train_every and replay_buffer.size < replay_buffer.capacity:
-                if replay_buffer.size - self.last_eval >= config['eval_every']:
-                    metrics = self._evaluate(is_final=False)
-                    utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
-                    self.summarizer.append(metrics)
-                    wandb.log(self.summarizer.summarize())
+        with tqdm(total=replay_buffer.capacity,desc='Training TWM') as pbar:
+            while replay_buffer.size < replay_buffer.capacity:
+                init_size = replay_buffer.size
+                # collect data in real environment
+                collect_policy = self._create_buffer_obs_policy()
+                should_log = False
+                with tqdm(total=train_every,desc='Collect data',initial=step_counter,leave=False) as _pbar:
+                    while step_counter <= train_every and replay_buffer.size < replay_buffer.capacity:
+                        if replay_buffer.size - self.last_eval >= config['eval_every']:
+                            metrics = self._evaluate(is_final=False)
+                            utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
+                            self.summarizer.append(metrics)
+                            wandb.log(self.summarizer.summarize())
 
-                replay_buffer.step(collect_policy)
-                step_counter += 1
+                        replay_buffer.step(collect_policy)
+                        step_counter += 1
 
-                if replay_buffer.size % log_every == 0:
+                        if replay_buffer.size % log_every == 0:
+                            should_log = True
+                        _pbar.update(1)
+
+                # train world model and actor-critic
+                metrics_hist = []
+                with tqdm(total=step_counter,desc='Train wm/ac',initial=step_counter,leave=False) as _pbar:
+                    while step_counter >= train_every:
+                        step_counter -= train_every
+                        metrics = self._train_step()
+                        metrics_hist.append(metrics)
+                        _pbar.update(train_every)
+
+                metrics = utils.mean_metrics(metrics_hist)
+                utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
+
+                # evaluate
+                if replay_buffer.size - self.last_eval >= config['eval_every'] and \
+                        replay_buffer.size < replay_buffer.capacity:
+                    eval_metrics = self._evaluate(is_final=False)
+                    metrics.update(eval_metrics)
                     should_log = True
 
-            # train world model and actor-critic
-            metrics_hist = []
-            while step_counter >= train_every:
-                step_counter -= train_every
-                metrics = self._train_step()
-                metrics_hist.append(metrics)
-
-            metrics = utils.mean_metrics(metrics_hist)
-            utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
-
-            # evaluate
-            if replay_buffer.size - self.last_eval >= config['eval_every'] and \
-                    replay_buffer.size < replay_buffer.capacity:
-                eval_metrics = self._evaluate(is_final=False)
-                metrics.update(eval_metrics)
-                should_log = True
-
-            self.summarizer.append(metrics)
-            if should_log:
-                wandb.log(self.summarizer.summarize())
+                self.summarizer.append(metrics)
+                if should_log:
+                    wandb.log(self.summarizer.summarize())
+                pbar.update(replay_buffer.size-init_size)
 
         # final evaluation
         metrics = self._evaluate(is_final=True)
@@ -214,14 +225,16 @@ class Trainer:
         # pretrain observation model
         wm_total_batch_size = config['wm_batch_size'] * config['wm_sequence_length']
         budget = config['pretrain_budget'] * config['pretrain_obs_p']
-        while budget > 0:
-            indices = torch.randperm(replay_buffer.size, device=replay_buffer.device)
-            while len(indices) > 0 and budget > 0:
-                idx = indices[:wm_total_batch_size]
-                indices = indices[wm_total_batch_size:]
-                o = replay_buffer.get_obs(idx, device=device)
-                _ = wm.optimize_pretrain_obs(o.unsqueeze(1))
-                budget -= idx.numel()
+        with tqdm(total=budget,desc='Pretraining observation model') as pbar:
+            while budget > 0:
+                indices = torch.randperm(replay_buffer.size, device=replay_buffer.device)
+                while len(indices) > 0 and budget > 0:
+                    idx = indices[:wm_total_batch_size]
+                    indices = indices[wm_total_batch_size:]
+                    o = replay_buffer.get_obs(idx, device=device)
+                    _ = wm.optimize_pretrain_obs(o.unsqueeze(1))
+                    budget -= idx.numel()
+                    pbar.update(idx.numel())
 
         # encode all observations once, since the encoder does not change anymore
         indices = torch.arange(replay_buffer.size, dtype=torch.long, device=replay_buffer.device)
@@ -232,44 +245,48 @@ class Trainer:
 
         # pretrain dynamics model
         budget = config['pretrain_budget'] * config['pretrain_dyn_p']
-        while budget > 0:
-            for idx in replay_buffer.generate_uniform_indices(
-                    config['wm_batch_size'], config['wm_sequence_length'], extra=2):  # 2 for context + next
-                z, logits = obs_model.sample_z(z_dist, idx=idx.flatten(), return_logits=True)
-                z, logits = [x.squeeze(1).unflatten(0, idx.shape) for x in (z, logits)]
-                z = z[:, :-1]
-                target_logits = logits[:, 2:]
-                idx = idx[:, :-2]
-                _, a, r, terminated, truncated, _ = replay_buffer.get_data(idx, device=device, prefix=1)
-                _ = wm.optimize_pretrain_dyn(z, a, r, terminated, truncated, target_logits)
-                budget -= idx.numel()
-                if budget <= 0:
-                    break
+        with tqdm(total=budget,desc='Pretraining dynamics model') as pbar:
+            while budget > 0:
+                for idx in replay_buffer.generate_uniform_indices(
+                        config['wm_batch_size'], config['wm_sequence_length'], extra=2):  # 2 for context + next
+                    z, logits = obs_model.sample_z(z_dist, idx=idx.flatten(), return_logits=True)
+                    z, logits = [x.squeeze(1).unflatten(0, idx.shape) for x in (z, logits)]
+                    z = z[:, :-1]
+                    target_logits = logits[:, 2:]
+                    idx = idx[:, :-2]
+                    _, a, r, terminated, truncated, _ = replay_buffer.get_data(idx, device=device, prefix=1)
+                    _ = wm.optimize_pretrain_dyn(z, a, r, terminated, truncated, target_logits)
+                    budget -= idx.numel()
+                    if budget <= 0:
+                        break
+                    pbar.update(idx.numel())
 
         # pretrain ac
         budget = config['pretrain_budget'] * (1 - config['pretrain_obs_p'] + config['pretrain_dyn_p'])
-        while budget > 0:
-            for idx in replay_buffer.generate_uniform_indices(
-                    config['ac_batch_size'], config['ac_horizon'], extra=2):  # 2 for context + next
-                z = obs_model.sample_z(z_dist, idx=idx.flatten())
-                z = z.squeeze(1).unflatten(0, idx.shape)
-                idx = idx[:, :-2]
-                _, a, r, terminated, truncated, _ = replay_buffer.get_data(idx, device=device, prefix=1)
-                d = torch.logical_or(terminated, truncated)
-                if config['ac_input_h']:
-                    g = wm.to_discounts(terminated)
-                    tgt_length = config['ac_horizon'] + 1
-                    with torch.no_grad():
-                        _, h, _ = wm.dyn_model.eval().predict(z[:, :-1], a, r, g, d[:, :-1], tgt_length)
-                else:
-                    h = None
-                g = wm.to_discounts(d)
-                z, r, g, d = [x[:, 1:] for x in (z, r, g, d)]
-                _ = ac.optimize_pretrain(z, h, r, g, d)
-                budget -= idx.numel()
-                if budget <= 0:
-                    break
-        ac.sync_target()
+        with tqdm(total=budget,desc='Pretraining actor-critic') as pbar:
+            while budget > 0:
+                for idx in replay_buffer.generate_uniform_indices(
+                        config['ac_batch_size'], config['ac_horizon'], extra=2):  # 2 for context + next
+                    z = obs_model.sample_z(z_dist, idx=idx.flatten())
+                    z = z.squeeze(1).unflatten(0, idx.shape)
+                    idx = idx[:, :-2]
+                    _, a, r, terminated, truncated, _ = replay_buffer.get_data(idx, device=device, prefix=1)
+                    d = torch.logical_or(terminated, truncated)
+                    if config['ac_input_h']:
+                        g = wm.to_discounts(terminated)
+                        tgt_length = config['ac_horizon'] + 1
+                        with torch.no_grad():
+                            _, h, _ = wm.dyn_model.eval().predict(z[:, :-1], a, r, g, d[:, :-1], tgt_length)
+                    else:
+                        h = None
+                    g = wm.to_discounts(d)
+                    z, r, g, d = [x[:, 1:] for x in (z, r, g, d)]
+                    _ = ac.optimize_pretrain(z, h, r, g, d)
+                    budget -= idx.numel()
+                    if budget <= 0:
+                        break
+                    pbar.update(idx.numel())
+            ac.sync_target()
 
     def _train_step(self):
         config = self.config
@@ -280,7 +297,7 @@ class Trainer:
         replay_buffer = self.replay_buffer
 
         # train wm
-        for _ in range(config['wm_train_steps']):
+        for _ in tqdm(range(config['wm_train_steps']),desc='Train wm',leave=False):
             metrics_i = {}
             idx = replay_buffer.sample_indices(config['wm_batch_size'], config['wm_sequence_length'])
             o, a, r, terminated, truncated, _ = \
@@ -308,7 +325,7 @@ class Trainer:
         dreamer = Dreamer(config, wm, mode='imagine', ac=ac, store_data=True,
                           start_z_sampler=self._create_start_z_sampler(temperature=1))
         dreamer.imagine_reset(start_z, start_a, start_r, start_terminated, start_truncated)
-        for _ in range(config['ac_horizon']):
+        for _ in tqdm(range(config['ac_horizon']),desc='Train ac',leave=False):
             a = dreamer.act()
             dreamer.imagine_step(a)
         z, o, h, a, r, g, d, weights = dreamer.get_data()
@@ -321,6 +338,7 @@ class Trainer:
 
     @torch.no_grad()
     def _evaluate(self, is_final):
+        print(f'Running{" FINIAL " if is_final else " "}evaluation...')
         start_time = time.time()
         config = self.config
         agent = self.agent
@@ -354,43 +372,45 @@ class Trainer:
         current_scores = np.zeros(num_envs)
         finished = np.zeros(num_envs, dtype=bool)
         num_truncated = 0
-        while len(scores) < num_episodes:
-            a = dreamer.act()
-            o, r, terminated, truncated, infos = eval_env.step(a.squeeze(1).cpu().numpy())
+        with tqdm(total=num_episodes, desc='Evaluating', leave=False) as pbar:
+            while len(scores) < num_episodes:
+                a = dreamer.act()
+                o, r, terminated, truncated, infos = eval_env.step(a.squeeze(1).cpu().numpy())
 
-            not_finished = ~finished
-            current_scores[not_finished] += r[not_finished]
-            lives = infos['lives']
-            for i in range(num_envs):
-                if not finished[i]:
-                    if truncated[i]:
-                        num_truncated += 1
-                        finished[i] = True
-                    elif terminated[i] and lives[i] == 0:
-                        finished[i] = True
+                not_finished = ~finished
+                current_scores[not_finished] += r[not_finished]
+                lives = infos['lives']
+                for i in range(num_envs):
+                    if not finished[i]:
+                        if truncated[i]:
+                            num_truncated += 1
+                            finished[i] = True
+                        elif terminated[i] and lives[i] == 0:
+                            finished[i] = True
 
-            o = utils.preprocess_atari_obs(o, device).unsqueeze(1)
-            r = torch.as_tensor(r, dtype=torch.float, device=device).unsqueeze(1)
-            terminated = torch.as_tensor(terminated, device=device).unsqueeze(1)
-            truncated = torch.as_tensor(truncated, device=device).unsqueeze(1)
-            z, h, _, d, _ = dreamer.observe_step(a, o, r, terminated, truncated)
+                o = utils.preprocess_atari_obs(o, device).unsqueeze(1)
+                r = torch.as_tensor(r, dtype=torch.float, device=device).unsqueeze(1)
+                terminated = torch.as_tensor(terminated, device=device).unsqueeze(1)
+                truncated = torch.as_tensor(truncated, device=device).unsqueeze(1)
+                z, h, _, d, _ = dreamer.observe_step(a, o, r, terminated, truncated)
 
-            if np.all(finished):
-                # only reset if all environments are finished to remove bias for shorter episodes
-                scores.extend(current_scores.tolist())
-                num_scores = len(scores)
-                if num_scores >= num_episodes:
-                    if num_scores > num_episodes:
-                        scores = scores[:num_episodes]  # unbiased, just pick first
-                    break
-                current_scores[:] = 0
-                finished[:] = False
-                if seed is not None:
-                    seed = seed * 3 + 13 + num_envs
-                start_o, _ = eval_env.reset(seed=seed, options={'force': True})
-                start_o = utils.preprocess_atari_obs(start_o, device).unsqueeze(1)
-                dreamer = Dreamer(config, wm, mode='observe', ac=ac, store_data=False)
-                dreamer.observe_reset_single(start_o)
+                if np.all(finished):
+                    # only reset if all environments are finished to remove bias for shorter episodes
+                    scores.extend(current_scores.tolist())
+                    num_scores = len(scores)
+                    if num_scores >= num_episodes:
+                        if num_scores > num_episodes:
+                            scores = scores[:num_episodes]  # unbiased, just pick first
+                        break
+                    pbar.update(len(current_scores))
+                    current_scores[:] = 0
+                    finished[:] = False
+                    if seed is not None:
+                        seed = seed * 3 + 13 + num_envs
+                    start_o, _ = eval_env.reset(seed=seed, options={'force': True})
+                    start_o = utils.preprocess_atari_obs(start_o, device).unsqueeze(1)
+                    dreamer = Dreamer(config, wm, mode='observe', ac=ac, store_data=False)
+                    dreamer.observe_reset_single(start_o)
         eval_env.close(terminate=True)
         if num_truncated > 0:
             print(f'{num_truncated} episode(s) truncated')

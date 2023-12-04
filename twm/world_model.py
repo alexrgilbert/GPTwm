@@ -167,11 +167,11 @@ class ObservationModel(nn.Module):
 
         elif config['env_suite'] == 'd4rl':
             self.encoder = nn.Sequential(
-                self.MLP(num_channels,[h,h,h,h], self.z_dim, activation, norm=norm, dropout_p=dropout_p)
+                nets.MLP(num_channels,[h,h,], self.z_dim, activation, norm=norm, dropout_p=dropout_p)
             )
             self.decoder = nn.Sequential(
-                self.MLP(self.z_dim,[h,h,h,h], h, activation, norm=norm, dropout_p=dropout_p),
-                self.MLP(h,[], num_channels, 'none', norm='none', dropout_p=dropout_p)
+                nets.MLP(self.z_dim,[h,], h, activation, norm=norm, dropout_p=dropout_p, post_activation=True),
+                nets.MLP(h,[], num_channels, None, norm='none', dropout_p=dropout_p)
             )
         else:
             raise NotImplementedError(f'Invalid Environment Suite: {config["env_suite"]}')
@@ -188,7 +188,7 @@ class ObservationModel(nn.Module):
         shape = o.shape[:2]
         o = o.flatten(0, 1)
 
-        if not config['env_grayscale']:
+        if not config.get('env_grayscale',True):
             o = o.permute(0, 1, 4, 2, 3)
             o = o.flatten(1, 2)
 
@@ -306,7 +306,7 @@ class DynamicsModel(nn.Module):
 
         embeds = {
             'z': {'in_dim': z_dim, 'categorical': False},
-            'a': {'in_dim': num_actions, 'categorical': True}
+            'a': {'in_dim': num_actions, 'categorical': config['env_act_categorical']}
         }
         modality_order = ['z', 'a']
         num_current = 2

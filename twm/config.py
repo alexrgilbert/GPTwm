@@ -103,6 +103,7 @@ ENV_CONFIGS = {
         'env_reward_transform': 'tanh',
         'env_discount_factor': 0.99,
         'env_discount_lambda': 0.95,
+        'env_act_categorical': True,
     },
     'd4rl': {
         'env_num_channels': 11, # np.prod(observation_space.shape)
@@ -110,9 +111,13 @@ ENV_CONFIGS = {
         'env_reward_transform': 'tanh',
         'env_discount_factor': 0.99,
         'env_discount_lambda': 0.95,
+        'env_act_categorical': False,
         'obs_channels': 1024,
         'obs_act': 'silu',
         'obs_norm': 'layer_norm',
+        'ac_act': 'tanh',
+        'ac_critic_act': 'silu',
+
     },
 }
 

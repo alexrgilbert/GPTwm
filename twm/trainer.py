@@ -3,6 +3,7 @@ import os
 import time
 from tqdm import tqdm
 
+import gym
 import numpy as np
 import torch
 import torchvision
@@ -27,7 +28,8 @@ class Trainer:
         self.env = self._create_env_from_config(config)
         self.replay_buffer = ReplayBuffer(config, self.env)
 
-        num_actions = np.prod(self.env.action_space.shape)
+        num_actions = self.env.action_space.n if isinstance(self.env.action_space,gym.spaces.Discrete) \
+                        else np.prod(self.env.action_space.shape)
         self.action_meanings = self.env.get_action_meanings()
         self.agent = Agent(config, num_actions).to(config['model_device'])
 
@@ -64,6 +66,8 @@ class Trainer:
                 config['env_frame_size'], config['env_episodic_lives'], config['env_grayscale'], config['env_time_limit'])
         elif config['env_suite'] == 'd4rl':
             env = utils.create_d4rl_env(config['game'], config['env_render_mode'])
+        else:
+            raise NotImplementedError(f'Invalid Environment Suite: {config["env_suite"]}')
         if eval:
             env = utils.NoAutoReset(env)  # must use options={'force': True} to really reset
         return env
@@ -232,7 +236,7 @@ class Trainer:
                     idx = indices[:wm_total_batch_size]
                     indices = indices[wm_total_batch_size:]
                     o = replay_buffer.get_obs(idx, device=device)
-                    _ = wm.optimize_pretrain_obs(o.unsqueeze(1))
+                    _ = wm.optimize_pretrain_obs(o) # .unsqueeze(1)) Verify this!
                     budget -= idx.numel()
                     pbar.update(idx.numel())
 
@@ -363,7 +367,7 @@ class Trainer:
 
         seed = ((config['seed'] + 13) * 7919 + 13) if config['seed'] is not None else None
         start_obs, _ = eval_env.reset(seed=seed)
-        start_obs = utils.preprocess_atari_obs(start_obs, device).unsqueeze(1)
+        start_obs = utils.preprocess_obs(start_obs, device, config['env_suite']).unsqueeze(1)
 
         dreamer = Dreamer(config, wm, mode='observe', ac=ac, store_data=False)
         dreamer.observe_reset_single(start_obs)
@@ -388,7 +392,7 @@ class Trainer:
                         elif terminated[i] and lives[i] == 0:
                             finished[i] = True
 
-                o = utils.preprocess_atari_obs(o, device).unsqueeze(1)
+                o = utils.preprocess_obs(o, device, config['env_suite']).unsqueeze(1)
                 r = torch.as_tensor(r, dtype=torch.float, device=device).unsqueeze(1)
                 terminated = torch.as_tensor(terminated, device=device).unsqueeze(1)
                 truncated = torch.as_tensor(truncated, device=device).unsqueeze(1)
@@ -408,7 +412,7 @@ class Trainer:
                     if seed is not None:
                         seed = seed * 3 + 13 + num_envs
                     start_o, _ = eval_env.reset(seed=seed, options={'force': True})
-                    start_o = utils.preprocess_atari_obs(start_o, device).unsqueeze(1)
+                    start_o = utils.preprocess_obs(start_o, device, config['env_suite']).unsqueeze(1)
                     dreamer = Dreamer(config, wm, mode='observe', ac=ac, store_data=False)
                     dreamer.observe_reset_single(start_o)
         eval_env.close(terminate=True)

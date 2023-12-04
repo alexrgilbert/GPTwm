@@ -149,6 +149,18 @@ def preprocess_atari_obs(obs, device=None):
         obs = np.array(obs)
     return torch.as_tensor(obs, device=device).float() / 255.
 
+def preprocess_d4rl_obs(obs, device=None):
+    return torch.as_tensor(obs, device=device).float()
+
+def preprocess_obs(obs, device=None, suite='atari'):
+    if suite == 'atari':
+        obs = preprocess_atari_obs(obs, device).unsqueeze(1)
+    elif suite == 'd4rl':
+        obs = preprocess_d4rl_obs(obs, device).unsqueeze(1)
+    else:
+        raise NotImplementedError(f'Unrecognized Environment Suite: {suite}')
+    return obs
+
 
 def create_atari_env(game, noop_max=30, frame_skip=4, frame_stack=4, frame_size=84,
                      episodic_lives=True, grayscale=True, time_limit=27000):

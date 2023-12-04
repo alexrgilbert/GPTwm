@@ -16,6 +16,7 @@ class ActorCritic(nn.Module):
         self.config = config
         self.num_actions = num_actions
         activation = config['ac_act']
+        critic_activation = config.get('ac_critic_act', config['ac_act'])
         norm = config['ac_norm']
         dropout_p = config['ac_dropout']
 
@@ -29,7 +30,7 @@ class ActorCritic(nn.Module):
             input_dim, config['actor_dims'], num_actions, activation, norm=norm, dropout_p=dropout_p,
             weight_initializer='orthogonal', bias_initializer='zeros')
         self.critic_model = nets.MLP(
-            input_dim, config['critic_dims'], 1, activation, norm=norm, dropout_p=dropout_p,
+            input_dim, config['critic_dims'], 1, critic_activation, norm=norm, dropout_p=dropout_p,
             weight_initializer='orthogonal', bias_initializer='zeros')
         if config['critic_target_interval'] > 1:
             self.target_critic_model = copy.deepcopy(self.critic_model).requires_grad_(False)

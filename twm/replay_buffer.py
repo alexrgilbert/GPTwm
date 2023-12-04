@@ -24,7 +24,8 @@ class ReplayBuffer:
 
         self.obs = torch.zeros((capacity + 1,) + initial_obs.shape, dtype=initial_obs.dtype, device=device)
         self.obs[0] = initial_obs
-        self.actions = torch.zeros((capacity,) + self.env.action_space.shape, dtype=torch.long, device=device)
+        dummy_action = torch.as_tensor(env.action_space.sample(), device=device)
+        self.actions = torch.zeros((capacity,) + dummy_action.shape, dtype=dummy_action.dtype, device=device)
         self.rewards = torch.zeros(capacity, dtype=torch.float, device=device)
         self.terminated = torch.zeros(capacity, dtype=torch.bool, device=device)
         self.truncated = torch.zeros(capacity, dtype=torch.bool, device=device)
@@ -104,7 +105,8 @@ class ReplayBuffer:
 
     def get_obs(self, idx, device=None, prefix=0, return_next=False):
         obs = self._get(self.obs, idx, device, prefix, return_next=return_next, allow_last=True)
-        return utils.preprocess_atari_obs(obs, device)
+        obs = utils.preprocess_obs(obs, device, self.config['env_suite'])
+        return obs
 
     def get_actions(self, idx, device=None, prefix=0):
         return self._get(self.actions, idx, device, prefix, repeat_fill_value=0)  # noop
@@ -148,7 +150,7 @@ class ReplayBuffer:
 
         self.obs[index + 1] = torch.as_tensor(np.array(next_obs), device=self.device)
         self.rewards[index] = self.reward_transform(reward)
-        self.actions[index] = action
+        self.actions[index] = torch.as_tensor(np.array(action), device=self.device)
         self.terminated[index] = terminated
         self.truncated[index] = truncated
         self.timesteps[index + 1] = 0 if (terminated or truncated) else (self.timesteps[index] + 1)

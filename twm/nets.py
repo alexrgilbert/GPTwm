@@ -24,6 +24,8 @@ def get_activation(nonlinearity, param=None):
         return nn.ELU(alpha=param)
     elif nonlinearity == 'silu':
         return nn.SiLU()
+    elif nonlinearity == 'tanh':
+        return nn.Tanh()
     else:
         raise ValueError(f'Unsupported nonlinearity: {nonlinearity}')
 

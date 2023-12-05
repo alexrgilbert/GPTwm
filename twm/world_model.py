@@ -234,7 +234,7 @@ class ObservationModel(nn.Module):
         shape = z.shape[:2]
         z = z.flatten(0, 1)
         recons = self.decoder(z)
-        if not config['env_grayscale']:
+        if not config.get('env_grayscale',True):
             recons = recons.unflatten(1, (config['env_frame_stack'], 3))
             recons = recons.permute(0, 1, 3, 4, 2)
         recons = recons.unflatten(0, shape)
@@ -244,14 +244,19 @@ class ObservationModel(nn.Module):
         assert utils.check_no_grad(o)
         config = self.config
         metrics = {}
-        recon_mean = recons.flatten(0, 1).permute(0, 2, 3, 1)
+        recon_mean = recons.flatten(0, 1)
+        if recon_mean.ndim > 2:
+            recon_mean = recon_mean.permute(0, 2, 3, 1)
         coef = config['obs_decoder_coef']
         if coef != 0:
-            if config['env_grayscale']:
-                o = o.flatten(0, 1).permute(0, 2, 3, 1)
-            else:
-                o = o.flatten(0, 1).permute(0, 2, 3, 1, 4).flatten(-2, -1)
-            recon_dist = D.Independent(D.Normal(recon_mean, torch.ones_like(recon_mean)), 3)
+            o = o.flatten(0,1)
+            if o.ndim > 2:
+                if config.get('env_grayscale',True):
+                    o = o.permute(0, 2, 3, 1)
+                else:
+                    o = o.permute(0, 2, 3, 1, 4).flatten(-2, -1)
+            # TODO: VERIFY THAT THIS IS CORRECT! I think it should be 1
+            recon_dist = D.Independent(D.Normal(recon_mean, torch.ones_like(recon_mean)), recon_mean.ndim-1)
             loss = -coef * recon_dist.log_prob(o).mean()
             metrics['dec_loss'] = loss.detach()
         else:

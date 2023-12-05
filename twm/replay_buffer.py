@@ -42,6 +42,24 @@ class ReplayBuffer:
         self.reward_transform = utils.create_reward_transform(config['env_reward_transform'])
         self.metrics_num_episodes = 0
 
+    # def replay_buffer_state(rb):
+    #     return {
+    #         'obs': rb.obs,
+    #         'actions': rb.actions,
+    #         'rewards': rb.rewards,
+    #         'terminated': rb.terminated,
+    #         'truncated': rb.truncated,
+    #         'timesteps': rb.timesteps,
+    #         'sample_visits': rb.sample_visits,
+    #         'capacity': rb.capacity,
+    #         'size': rb.size,
+    #         'total_reward': rb.total_reward,
+    #         'score': rb.score,
+    #         'episode_lengths': rb.episode_lengths,
+    #         'scores': rb.scores,
+    #         'metrics_num_episodes': rb.metrics_num_episodes,
+    #     }
+
     def sample_random_action(self):
         return self.env.action_space.sample()
 

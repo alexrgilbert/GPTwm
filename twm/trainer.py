@@ -15,6 +15,8 @@ from replay_buffer import ReplayBuffer
 
 import utils
 
+import matplotlib.pyplot as plt
+
 
 class Trainer:
 
@@ -104,7 +106,12 @@ class Trainer:
                 truncated = replay_buffer.get_truncated([[index - 1]], device=device)
                 dreamer.observe_step(a, o, r, terminated, truncated)
                 a = dreamer.act()
-            return a.squeeze().item()
+            a = a.squeeze()
+            if not a.ndim:
+                a = a.item()
+            else:
+                a = a.cpu().numpy()
+            return a
         return policy
 
     def _create_start_z_sampler(self, temperature):
@@ -236,7 +243,7 @@ class Trainer:
                     idx = indices[:wm_total_batch_size]
                     indices = indices[wm_total_batch_size:]
                     o = replay_buffer.get_obs(idx, device=device)
-                    _ = wm.optimize_pretrain_obs(o) # .unsqueeze(1)) Verify this!
+                    _ = wm.optimize_pretrain_obs(o.unsqueeze(1))
                     budget -= idx.numel()
                     pbar.update(idx.numel())
 
@@ -354,8 +361,9 @@ class Trainer:
         metrics = {}
         metrics['buffer/visits'] = replay_buffer.visit_histogram()
         metrics['buffer/sample_probs'] = replay_buffer.sample_probs_histogram()
-        recon_img, imagine_img = self._create_eval_images(is_final)
-        metrics['eval/recons'] = wandb.Image(recon_img)
+        recon_img, imagine_img = self._create_eval_images(is_final, config['env_suite'])
+        if recon_img is not None:
+            metrics['eval/recons'] = wandb.Image(recon_img)
         if imagine_img is not None:
             metrics['eval/imagine'] = wandb.Image(imagine_img)
 
@@ -383,7 +391,7 @@ class Trainer:
 
                 not_finished = ~finished
                 current_scores[not_finished] += r[not_finished]
-                lives = infos['lives']
+                lives = infos.get('lives',np.zeros_like(r))
                 for i in range(num_envs):
                     if not finished[i]:
                         if truncated[i]:
@@ -426,7 +434,7 @@ class Trainer:
             'score_median': np.median(scores),
             'score_min': np.min(scores),
             'score_max': np.max(scores),
-            'hns': utils.compute_atari_hns(config['game'], score_mean)
+            'hns': utils.compute_atari_hns(config['game'], score_mean) if config['env_suite'] == 'atari' else score_mean,
         }
         metrics.update({f'eval/{key}': value for key, value in score_metrics.items()})
         if is_final:
@@ -441,8 +449,106 @@ class Trainer:
         self.last_eval = replay_buffer.size
         return metrics
 
+    def _create_eval_images(self, is_final=False, suite='atari'):
+        if suite == 'atari':
+            return self._create_eval_images_atari(is_final)
+        elif suite == 'd4rl':
+            return self._create_eval_images_d4rl(is_final)
+        else:
+            raise NotImplementedError(f'Unrecognized Environment Suite: {suite}!')
+
     @torch.no_grad()
-    def _create_eval_images(self, is_final=False):
+    def _create_eval_images_d4rl(self, is_final=False):
+        return None, None
+        config = self.config
+        agent = self.agent
+        replay_buffer = self.replay_buffer
+        obs_model = agent.wm.obs_model.eval()
+
+        # recon_img
+        idx = utils.random_choice(replay_buffer.size, 10, device=replay_buffer.device).unsqueeze(1)
+        o = replay_buffer.get_obs(idx)
+        z = obs_model.encode_sample(o, temperature=0)
+        recons = obs_model.decode(z)
+        # use last frame of frame stack
+        o = o.squeeze(1)
+        recons = recons.squeeze(1)
+        # recon_img = torch.cat(recon_img, dim=0).squeeze(1).transpose(0, 1).flatten(0, 1)
+        # recon_img = torchvision.utils.make_grid(recon_img, nrow=o.shape[0], padding=2)
+        # recon_img = utils.to_image(recon_img)
+
+        fig,axes = plt.subplots(10,1,figsize=(16,12), sharex=True)
+        fig.suptitle('Reconstruction Comparison')
+        x,width = np.arange(len(obs)), 0.25
+        for ax,obs,recon in zip(axes,o,recons):
+            obs_rects = ax.bar(x,obs,width,label='Observation')
+            ax.bar_label(obs_rects, padding=3)
+            recon_rects = ax.bar(x + width,recon,width,label='Reconstruction')
+            ax.bar_label(recon_rects, padding=3)
+        axes[0].legend(loc='upper left', ncols=2)
+        axes[-1].set_xticks(x + width, self.env.get_action_meanings())
+
+
+        # # imagine_img
+        # idx = idx[:5]
+        # start_o = replay_buffer.get_obs(idx, prefix=1)  # 1 for context
+        # start_a = replay_buffer.get_actions(idx, prefix=1)[:, :-1]
+        # start_r = replay_buffer.get_rewards(idx, prefix=1)[:, :-1]
+        # start_terminated = replay_buffer.get_terminated(idx, prefix=1)[:, :-1]
+        # start_truncated = replay_buffer.get_truncated(idx, prefix=1)[:, :-1]
+        # start_z = obs_model.encode_sample(start_o, temperature=0)
+
+        # horizon = 100 if is_final else config['wm_sequence_length']
+        # dreamer = Dreamer(config, agent.wm, mode='imagine', ac=agent.ac, store_data=True,
+        #                   start_z_sampler=self._create_start_z_sampler(temperature=0), always_compute_obs=True)
+        # dreamer.imagine_reset(start_z, start_a, start_r, start_terminated, start_truncated, keep_start_data=True)
+        # for _ in range(horizon):
+        #     a = dreamer.act()
+        #     dreamer.imagine_step(a, temperature=1)
+        # z, o, _, a, r, g, d, weights = dreamer.get_data()
+
+        # o = o[:, :-1, -1:]  # remove last time step and use last frame of frame stack
+        # a, r, g, weights = [x.cpu().numpy() for x in (a, r, g, weights)]
+
+        # imagine_img = o
+        # if config.get('env_grayscale',True):
+        #     imagine_img = imagine_img.unsqueeze(3)
+        # else:
+        #     imagine_img = imagine_img.permute(0, 1, 2, 5, 3, 4)
+        # imagine_img = imagine_img.unsqueeze(1)
+        # imagine_img = imagine_img.transpose(2, 3).flatten(0, 3)
+        # pad = 2
+        # extra_pad = 38
+        # imagine_img = utils.make_grid(imagine_img, nrow=o.shape[1], padding=(pad + extra_pad, pad))
+        # imagine_img = utils.to_image(imagine_img[:, extra_pad:])
+
+        # draw = ImageDraw.Draw(imagine_img)
+        # h, w = o.shape[3:5]
+        # for t in range(r.shape[1]):
+        #     for i in range(r.shape[0]):
+        #         x = pad + t * (w + pad)
+        #         y = pad + i * (h + extra_pad + pad) + h
+        #         weight = weights[i, t]
+        #         reward = r[i, t]
+
+        #         if abs(reward) < 1e-4:
+        #             color_rgb = int(weight * 255)
+        #             color = (color_rgb, color_rgb, color_rgb)  # white
+        #         elif reward > 0:
+        #             color_rb = int(weight * 100)
+        #             color_g = int(weight * (255 + reward * 255) / 2)
+        #             color = (color_rb, color_g, color_rb)  # green
+        #         else:
+        #             color_gb = int(weight * 80)
+        #             color_r = int(weight * (255 + (-reward) * 255) / 2)
+        #             color = (color_r, color_gb, color_gb)  # red
+        #         draw.text((x + 2, y + 2), f'a: {self.action_meanings[a[i, t]][:7]: >7}', fill=color)
+        #         draw.text((x + 2, y + 2 + 10), f'r: {r[i, t]: .4f}', fill=color)
+        #         draw.text((x + 2, y + 2 + 20), f'g: {g[i, t]: .4f}', fill=color)
+        return recon_img, imagine_img
+
+    @torch.no_grad()
+    def _create_eval_images_atari(self, is_final=False):
         config = self.config
         agent = self.agent
         replay_buffer = self.replay_buffer
@@ -456,7 +562,7 @@ class Trainer:
         # use last frame of frame stack
         o = o[:, :, -1:]
         recons = recons[:, :, -1:]
-        if config['env_grayscale']:
+        if config.get('env_grayscale',True):
             recon_img = [o.unsqueeze(-3), recons.unsqueeze(-3)]  # unsqueeze channel
         else:
             recon_img = [o.permute(0, 1, 2, 5, 3, 4), recons.permute(0, 1, 2, 5, 3, 4)]
@@ -486,7 +592,7 @@ class Trainer:
         a, r, g, weights = [x.cpu().numpy() for x in (a, r, g, weights)]
 
         imagine_img = o
-        if config['env_grayscale']:
+        if config.get('env_grayscale',True):
             imagine_img = imagine_img.unsqueeze(3)
         else:
             imagine_img = imagine_img.permute(0, 1, 2, 5, 3, 4)

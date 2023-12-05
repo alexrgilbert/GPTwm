@@ -154,9 +154,9 @@ def preprocess_d4rl_obs(obs, device=None):
 
 def preprocess_obs(obs, device=None, suite='atari'):
     if suite == 'atari':
-        obs = preprocess_atari_obs(obs, device).unsqueeze(1)
+        obs = preprocess_atari_obs(obs, device)
     elif suite == 'd4rl':
-        obs = preprocess_d4rl_obs(obs, device).unsqueeze(1)
+        obs = preprocess_d4rl_obs(obs, device)
     else:
         raise NotImplementedError(f'Unrecognized Environment Suite: {suite}')
     return obs
@@ -182,7 +182,7 @@ def create_atari_env(game, noop_max=30, frame_skip=4, frame_stack=4, frame_size=
     return env
 
 def create_d4rl_env(game, render_mode=None):
-    env = gym.make(game)
+    env = gym.make(game, render_mode=render_mode)
     env = D4RLEnvWrapper(env)
     # env = AtariEnv(rom_name_to_id(game), frameskip=1, repeat_action_probability=0.0)
     # env.spec = gym.spec(game + 'NoFrameskip-v4')  # required for AtariPreprocessing
@@ -340,9 +340,24 @@ class D4RLEnvWrapper(gym.Wrapper):
         super().__init__(env)
         self.n = np.prod(self.action_space.shape)
 
+    def step(self, action):
+        if isinstance(action, torch.Tensor):
+            action = action.cpu().numpy()
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        return super().step(action)
+
     def get_action_meanings(self):
         if self.spec.id == 'Hopper-v4':
             return ['Thigh Joint','Leg Joint','Foot Joint']
+
+    def get_observation_meanings(self):
+        if self.spec.id == 'Hopper-v4':
+            return ['Top Z (m)', 'Top Angle (rad)', 'Thigh Joint Angle (rad)', 
+                    'Leg Joint Angle (rad)', 'Foot Joint Angle (rad)', 'Top X-Velocity (m/s)', 
+                    'Top Z-Velocity (m/s)', 'Top Angular Velocity (rad/s)', 'Thigh Hinge Angular Velocity (rad/s)', 
+                    'Leg Hinge Angular Velocity (rad/s)', 'Foot Hinge Angular Velocity (rad/s)']
+
+            
 
 
 @torch.no_grad()

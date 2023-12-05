@@ -15,8 +15,8 @@ class ActorCritic(nn.Module):
         super().__init__()
         self.config = config
         self.num_actions = num_actions
+        self.continuous_actions = (not config.get('env_act_categorical', True))
         activation = config['ac_act']
-        critic_activation = config.get('ac_critic_act', config['ac_act'])
         norm = config['ac_norm']
         dropout_p = config['ac_dropout']
 
@@ -30,7 +30,7 @@ class ActorCritic(nn.Module):
             input_dim, config['actor_dims'], num_actions, activation, norm=norm, dropout_p=dropout_p,
             weight_initializer='orthogonal', bias_initializer='zeros')
         self.critic_model = nets.MLP(
-            input_dim, config['critic_dims'], 1, critic_activation, norm=norm, dropout_p=dropout_p,
+            input_dim, config['critic_dims'], 1, activation, norm=norm, dropout_p=dropout_p,
             weight_initializer='orthogonal', bias_initializer='zeros')
         if config['critic_target_interval'] > 1:
             self.target_critic_model = copy.deepcopy(self.critic_model).requires_grad_(False)
@@ -105,18 +105,20 @@ class ActorCritic(nn.Module):
         critic_loss, critic_metrics = self._compute_critic_loss(values, returns, weights)
 
         # maximize entropy, ok since data was collected with random policy
-        shape = x.shape[:2]
-        logits = self.actor_model(x.flatten(0, 1)).unflatten(0, shape)
-        dist = D.Categorical(logits=logits)
-        max_entropy = math.log(self.num_actions)
-        entropy = dist.entropy().mean()
-        normalized_entropy = entropy / max_entropy
-        actor_loss = -config['actor_entropy_coef'] * normalized_entropy
-        actor_metrics = {
-            'actor_loss': actor_loss.detach(), 'ent': entropy.detach(), 'norm_ent': normalized_entropy.detach()
-        }
-
-        self.actor_optimizer.step(actor_loss)
+        actor_metrics = {}
+        if config['actor_entropy_coef']:
+            shape = x.shape[:2]
+            logits = self.actor_model(x.flatten(0, 1)).unflatten(0, shape)
+            # TODO: Verify this
+            dist =  D.Independent(D.Normal(logits, torch.ones_like(logits)),1) if self.continuous_actions else D.Categorical(logits=logits)
+            max_entropy = math.log(self.num_actions)
+            entropy = dist.entropy().mean()
+            normalized_entropy = entropy / max_entropy
+            actor_loss = -config['actor_entropy_coef'] * normalized_entropy
+            actor_metrics = {
+                'actor_loss': actor_loss.detach(), 'ent': entropy.detach(), 'norm_ent': normalized_entropy.detach()
+            }
+            self.actor_optimizer.step(actor_loss)
         self.critic_optimizer.step(critic_loss)
 
         return utils.combine_metrics([critic_metrics, actor_metrics])
@@ -124,7 +126,7 @@ class ActorCritic(nn.Module):
     def _compute_actor_loss(self, logits, a, advantages, weights):
         assert utils.check_no_grad(a, advantages, weights)
         config = self.config
-        dist = D.Categorical(logits=logits)
+        dist =  D.Independent(D.Normal(logits, torch.ones_like(logits)),1) if self.continuous_actions else D.Categorical(logits=logits)
         reinforce = dist.log_prob(a) * advantages
         reinforce = (weights * reinforce).mean()
         loss = -reinforce
@@ -201,10 +203,18 @@ class ActorCritic(nn.Module):
         x = self._prepare_inputs(z, h)
         logits = self.actor(x)
 
-        if temperature == 0:
-            actions = logits.argmax(dim=-1)
+        if self.continuous_actions:
+            if temperature == 0:
+                actions = logits
+            else:
+                if temperature != 1:
+                    logits = logits / temperature
+                actions = D.Independent(D.Normal(logits, torch.ones_like(logits)),logits.ndim-1).sample()
         else:
-            if temperature != 1:
-                logits = logits / temperature
-            actions = D.Categorical(logits=logits / temperature).sample()
+            if temperature == 0:
+                actions = logits.argmax(dim=-1)
+            else:
+                if temperature != 1:
+                    logits = logits / temperature
+                actions = D.Categorical(logits=logits / temperature).sample()
         return actions

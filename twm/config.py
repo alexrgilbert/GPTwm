@@ -8,7 +8,7 @@ CONFIGS['default'] = {
 
     # training
     'budget': 1000000000,
-    'pretrain_budget': 50000000,
+    'pretrain_budget': 50000,
     'pretrain_obs_p': 0.6,
     'pretrain_dyn_p': 0.3,
 
@@ -73,7 +73,7 @@ CONFIGS['default'] = {
     'ac_h_norm': 'none',
     'ac_normalize_advantages': False,
 
-    'actor_dims': [512, 512, 512, 512],
+    'actor_dims': [512, 512], #, 512, 512],
     'actor_lr': 1e-4,
     'actor_eps': 1e-5,
     'actor_wd': 1e-6,
@@ -81,7 +81,7 @@ CONFIGS['default'] = {
     'actor_entropy_threshold': 0.1,
     'actor_grad_clip': 1,
 
-    'critic_dims': [512, 512, 512, 512],
+    'critic_dims': [512, 512],# 512, 512],
     'critic_lr': 1e-5,
     'critic_eps': 1e-5,
     'critic_wd': 1e-6,
@@ -115,8 +115,8 @@ ENV_CONFIGS = {
         'obs_channels': 1024,
         'obs_act': 'silu',
         'obs_norm': 'layer_norm',
-        'ac_act': 'tanh',
-        'ac_critic_act': 'silu',
+        'ac_act': 'silu',
+        'actor_entropy_coef': 0,
 
     },
 }

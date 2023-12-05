@@ -152,9 +152,8 @@ class Dreamer:
             start_z, start_a, start_r, start_terminated, start_truncated, keep_start_data)
         return z, h, start_z, start_g, start_d
 
-    @staticmethod
-    def _create_single_data(batch_size, device):
-        start_a = torch.zeros(batch_size, 0, dtype=torch.long, device=device)
+    def _create_single_data(self, batch_size, device):
+        start_a = torch.zeros(batch_size, 0, self.ac.num_actions, dtype=torch.long, device=device)
         start_r = torch.zeros(batch_size, 0, device=device)
         start_terminated = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
         start_truncated = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
@@ -274,7 +273,11 @@ class Dreamer:
         a = self.ac.policy(z, h, temperature=temperature)
         if epsilon > 0:
             num_actions = self.ac.num_actions
+            cont = self.ac.continuous_actions
             epsilon_mask = torch.rand_like(a, dtype=torch.float) < epsilon
-            random_actions = torch.randint_like(a, num_actions)
+            if cont:
+                random_actions = 2*torch.rand_like(a,num_actions)-1
+            else:
+                random_actions = torch.randint_like(a, num_actions)
             a[epsilon_mask] = random_actions[epsilon_mask]
         return a

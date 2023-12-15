@@ -5,6 +5,7 @@ from functools import lru_cache
 import torch
 import torch.nn.functional as F
 from torch import nn
+from transformers import TransfoXLModel
 
 import utils
 
@@ -628,6 +629,139 @@ class PredictionNet(nn.Module):
         outputs = self.transformer(
             inputs, positions, attn_mask=src_mask, mems=mems, tgt_length=tgt_length, return_attention=return_attention)
         hiddens, mems, attention = outputs if return_attention else (outputs + (None,))
+
+        # take outputs at last current
+        assert hiddens.shape[1] == tgt_length
+        out_idx = torch.arange(tgt_length - 1, -1, -num_modalities, device=inputs.device).flip([0])
+        hiddens = hiddens[:, out_idx]
+        if return_attention:
+            attention = attention[out_idx]
+
+        if heads is None:
+            heads = self.out_heads.keys()
+
+        out = {name: self.out_heads[name](hiddens) for name in heads}
+
+        return (out, hiddens, mems, attention) if return_attention else (out, hiddens, mems)
+
+
+class TransformerXLModel(nn.Module):
+    def __init__(self, modality_order, num_current, embeds, out_heads, activation, norm, dropout_p,
+                 memory_length, max_length, checkpoint="transfo-xl-wt103",):
+        super().__init__()
+        self.model = TransfoXLModel.from_pretrained(checkpoint)
+        self.config = self.model.config
+
+        self.memory_length = memory_length
+        self.modality_order = tuple(modality_order)
+        self.num_current = num_current
+
+        self.embeds = nn.ModuleDict({
+            name: nn.Embedding(embed['in_dim'], self.embed_dim) if embed.get('categorical', False) else
+            MLP(embed['in_dim'], [], self.embed_dim, activation, norm=norm, dropout_p=dropout_p, post_activation=True)
+            for name, embed in embeds.items()
+        })
+        
+        self.out_heads = nn.ModuleDict({
+            name: MLP(self.embed_dim, head['hidden_dims'], head['out_dim'], activation, norm=norm, dropout_p=dropout_p,
+                      pre_activation=True, final_bias_init=head.get('final_bias_init', None))
+            for name, head in out_heads.items()
+        })
+
+    @property
+    def embed_dim(self):
+        return self.config.d_embed
+
+    @lru_cache(maxsize=20)
+    def _get_base_mask(self, src_length, tgt_length, device):
+        src_mask = torch.ones(tgt_length, src_length, dtype=torch.bool, device=device)
+        num_modalities = len(self.modality_order)
+        for tgt_index in range(tgt_length):
+            # the last indices are always 'current'
+            start_index = src_length - self.num_current
+            src_index = src_length - tgt_length + tgt_index
+            modality_index = (src_index - start_index) % num_modalities
+            if modality_index < self.num_current:
+                start = max(src_index - (self.memory_length + 1) * num_modalities, 0)
+            else:
+                start = max(src_index - modality_index - self.memory_length * num_modalities, 0)
+            src_mask[tgt_index, start:src_index + 1] = False
+        return src_mask
+
+    def _get_mask(self, src_length, tgt_length, device, stop_mask):
+        # prevent attention over episode ends using stop_mask
+        num_modalities = len(self.modality_order)
+        assert stop_mask.shape[1] * num_modalities + self.num_current == src_length
+
+        src_mask = self._get_base_mask(src_length, tgt_length, device)
+
+        batch_size, seq_length = stop_mask.shape
+        stop_mask = stop_mask.t()
+        stop_mask_shift_right = torch.cat([stop_mask.new_zeros(1, batch_size), stop_mask], dim=0)
+        stop_mask_shift_left = torch.cat([stop_mask, stop_mask.new_zeros(1, batch_size)], dim=0)
+
+        tril = stop_mask.new_ones(seq_length + 1, seq_length + 1).tril()
+        src = torch.logical_and(stop_mask_shift_left.unsqueeze(0), tril.unsqueeze(-1))
+        src = torch.cummax(src.flip(1), dim=1).values.flip(1)
+
+        shifted_tril = stop_mask.new_ones(seq_length + 1, seq_length + 1).tril(diagonal=-1)
+        tgt = torch.logical_and(stop_mask_shift_right.unsqueeze(1), shifted_tril.unsqueeze(-1))
+        tgt = torch.cummax(tgt, dim=0).values
+
+        idx = torch.logical_and(src, tgt)
+
+        i, j, k = idx.shape
+        idx = idx.reshape(i, 1, j, 1, k).expand(i, num_modalities, j, num_modalities, k) \
+            .reshape(i * num_modalities, j * num_modalities, k)
+
+        offset = num_modalities - self.num_current
+        if offset > 0:
+            idx = idx[:-offset, :-offset]
+        idx = idx[-tgt_length:]
+
+        src_mask = src_mask.unsqueeze(-1).tile(1, 1, batch_size)
+        src_mask[idx] = True
+        return src_mask
+
+    def forward(self, inputs, tgt_length, stop_mask, heads=None, mems=None, return_attention=False):
+        modality_order = self.modality_order
+        num_modalities = len(modality_order)
+        num_current = self.num_current
+
+        assert utils.same_batch_shape([inputs[name] for name in modality_order[:num_current]])
+        if num_modalities > num_current:
+            assert utils.same_batch_shape([inputs[name] for name in modality_order[num_current:]])
+
+        embeds = {name: mod(inputs[name]) for name, mod in self.embeds.items()}
+
+        def cat_modalities(xs):
+            batch_size, seq_len, dim = xs[0].shape
+            return torch.cat(xs, dim=2).reshape(batch_size, seq_len * len(xs), dim)
+
+        if mems is None:
+            history_length = embeds[modality_order[0]].shape[1] - 1
+            if num_modalities == num_current:
+                inputs = cat_modalities([embeds[name] for name in modality_order])
+            else:
+                history = cat_modalities([embeds[name][:, :history_length] for name in modality_order])
+                current = cat_modalities([embeds[name][:, history_length:] for name in modality_order[:num_current]])
+                inputs = torch.cat([history, current], dim=1)
+            tgt_length = (tgt_length - 1) * num_modalities + num_current
+            src_length = history_length * num_modalities + num_current
+            assert inputs.shape[1] == src_length
+            src_mask = self._get_mask(src_length, src_length, inputs.device, stop_mask)
+        else:
+            sequence_length = embeds[modality_order[0]].shape[1]
+            # switch order so that 'currents' are last
+            inputs = cat_modalities(
+                [embeds[name] for name in (modality_order[num_current:] + modality_order[:num_current])])
+            tgt_length = tgt_length * num_modalities
+            mem_length = mems[0].shape[0]
+            src_length = mem_length + sequence_length * num_modalities
+            src_mask = self._get_mask(src_length, tgt_length, inputs.device, stop_mask)
+
+        outputs = self.model(input_embeddings=inputs,mems=mems,head_mask=src_mask, output_attention=return_attention)
+        hiddens, mems, attention = outputs['last_hidden_state'], outputs['mems'], outputs.get('attentions')
 
         # take outputs at last current
         assert hiddens.shape[1] == tgt_length

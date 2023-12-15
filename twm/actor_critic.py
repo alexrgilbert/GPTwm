@@ -106,11 +106,11 @@ class ActorCritic(nn.Module):
 
         # maximize entropy, ok since data was collected with random policy
         actor_metrics = {}
-        if config['actor_entropy_coef']:
+        if not self.continuous_actions:
             shape = x.shape[:2]
             logits = self.actor_model(x.flatten(0, 1)).unflatten(0, shape)
             # TODO: Verify this
-            dist =  D.Independent(D.Normal(logits, torch.ones_like(logits)),1) if self.continuous_actions else D.Categorical(logits=logits)
+            dist = D.Categorical(logits=logits)
             max_entropy = math.log(self.num_actions)
             entropy = dist.entropy().mean()
             normalized_entropy = entropy / max_entropy

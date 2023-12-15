@@ -143,10 +143,12 @@ class ObservationModel(nn.Module):
         norm = config['obs_norm']
         dropout_p = config['obs_dropout']
 
-        # num_channels = config['env_frame_stack']
-        # if not config['env_grayscale']:
-        #     num_channels *= 3
-        num_channels = config['env_num_channels']
+        if config['env_suite'] == 'atari':
+            num_channels = config['env_frame_stack']
+            if not config['env_grayscale']:
+                num_channels *= 3
+        elif config['env_suite'] in ['d4rl','d3rl']:
+            num_channels = config['env_num_channels']
 
         if config['env_suite'] == 'atari':
             self.encoder = nn.Sequential(
@@ -165,7 +167,7 @@ class ObservationModel(nn.Module):
                                 activation, final_bias_init=0.5)
             )
 
-        elif config['env_suite'] == 'd4rl':
+        elif config['env_suite'] in ['d4rl','d3rl']:
             self.encoder = nn.Sequential(
                 nets.MLP(num_channels,[h,h,], self.z_dim, activation, norm=norm, dropout_p=dropout_p)
             )
@@ -335,12 +337,18 @@ class DynamicsModel(nn.Module):
 
         memory_length = config['wm_memory_length']
         max_length = 1 + config['wm_sequence_length']  # 1 for context
-        self.prediction_net = nets.PredictionNet(
-            modality_order, num_current, embeds, out_heads, embed_dim=config['dyn_embed_dim'],
-            activation=config['dyn_act'], norm=config['dyn_norm'], dropout_p=config['dyn_dropout'],
-            feedforward_dim=config['dyn_feedforward_dim'], head_dim=config['dyn_head_dim'],
-            num_heads=config['dyn_num_heads'], num_layers=config['dyn_num_layers'],
-            memory_length=memory_length, max_length=max_length)
+        if config['load_pretrained']:
+            self.prediction_net = nets.TransformerXLModel(
+                modality_order, num_current, embeds, out_heads,
+                activation=config['dyn_act'], norm=config['dyn_norm'], dropout_p=config['dyn_dropout'],
+                memory_length=memory_length, max_length=max_length)
+        else:
+            self.prediction_net = nets.PredictionNet(
+                modality_order, num_current, embeds, out_heads, embed_dim=config['dyn_embed_dim'],
+                activation=config['dyn_act'], norm=config['dyn_norm'], dropout_p=config['dyn_dropout'],
+                feedforward_dim=config['dyn_feedforward_dim'], head_dim=config['dyn_head_dim'],
+                num_heads=config['dyn_num_heads'], num_layers=config['dyn_num_layers'],
+                memory_length=memory_length, max_length=max_length)
 
     @property
     def h_dim(self):

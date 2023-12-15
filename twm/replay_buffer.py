@@ -123,8 +123,7 @@ class ReplayBuffer:
 
     def get_obs(self, idx, device=None, prefix=0, return_next=False):
         obs = self._get(self.obs, idx, device, prefix, return_next=return_next, allow_last=True)
-        obs = utils.preprocess_obs(obs, device, self.config['env_suite'])
-        return obs
+        return utils.preprocess_obs(obs, device, self.config['env_suite'])
 
     def get_actions(self, idx, device=None, prefix=0):
         return self._get(self.actions, idx, device, prefix, repeat_fill_value=0)  # noop

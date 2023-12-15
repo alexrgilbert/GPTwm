@@ -153,7 +153,8 @@ class Dreamer:
         return z, h, start_z, start_g, start_d
 
     def _create_single_data(self, batch_size, device):
-        start_a = torch.zeros(batch_size, 0, self.ac.num_actions, dtype=torch.long, device=device)
+        action_shape = (batch_size, 0, self.ac.num_actions) if self.ac.continuous_actions else (batch_size, 0)
+        start_a = torch.zeros(*action_shape, dtype=torch.long, device=device)
         start_r = torch.zeros(batch_size, 0, device=device)
         start_terminated = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
         start_truncated = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)

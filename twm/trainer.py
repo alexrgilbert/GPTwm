@@ -68,6 +68,12 @@ class Trainer:
                 config['env_frame_size'], config['env_episodic_lives'], config['env_grayscale'], config['env_time_limit'])
         elif config['env_suite'] == 'd4rl':
             env = utils.create_d4rl_env(config['game'], config['env_render_mode'])
+        elif config['env_suite'] == 'd3rl':
+            env = utils.create_d3rl_env(config['game'], 
+                                        render_mode=config['env_render_mode'], 
+                                        frame_stack=config['env_frame_stack'],
+                                        max_episode_steps=config['env_time_limit'],
+                                        )
         else:
             raise NotImplementedError(f'Invalid Environment Suite: {config["env_suite"]}')
         if eval:
@@ -211,6 +217,13 @@ class Trainer:
                     wandb.log(self.summarizer.summarize())
                 pbar.update(replay_buffer.size-init_size)
 
+                if config['save'] and replay_buffer.size - self.last_eval >= config['save_every'] and \
+                        replay_buffer.size < replay_buffer.capacity:
+                    filename = 'agent.pt'
+                    checkpoint = {'config': dict(config), 'state_dict': self.agent.state_dict(), 'size': replay_buffer.size}
+                    torch.save(checkpoint, os.path.join(wandb.run.dir, filename))
+                    wandb.save(filename)
+
         # final evaluation
         metrics = self._evaluate(is_final=True)
         utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
@@ -220,7 +233,7 @@ class Trainer:
         # save final model
         if config['save']:
             filename = 'agent_final.pt'
-            checkpoint = {'config': dict(config), 'state_dict': self.agent.state_dict()}
+            checkpoint = {'config': dict(config), 'state_dict': self.agent.state_dict(), 'size': replay_buffer.size}
             torch.save(checkpoint, os.path.join(wandb.run.dir, filename))
             wandb.save(filename)
 
@@ -349,7 +362,7 @@ class Trainer:
 
     @torch.no_grad()
     def _evaluate(self, is_final):
-        print(f'Running{" FINIAL " if is_final else " "}evaluation...')
+        print(f'Running{" FINAL " if is_final else " "}evaluation...')
         start_time = time.time()
         config = self.config
         agent = self.agent
@@ -454,8 +467,14 @@ class Trainer:
             return self._create_eval_images_atari(is_final)
         elif suite == 'd4rl':
             return self._create_eval_images_d4rl(is_final)
+        elif suite == 'd3rl':
+            return self._create_eval_images_d3rl(is_final)
         else:
             raise NotImplementedError(f'Unrecognized Environment Suite: {suite}!')
+
+    @torch.no_grad()
+    def _create_eval_images_d3rl(self, is_final=False):
+        return None, None
 
     @torch.no_grad()
     def _create_eval_images_d4rl(self, is_final=False):

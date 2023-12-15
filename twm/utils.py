@@ -152,11 +152,18 @@ def preprocess_atari_obs(obs, device=None):
 def preprocess_d4rl_obs(obs, device=None):
     return torch.as_tensor(obs, device=device).float()
 
+def preprocess_d3rl_obs(obs, device=None):
+    if isinstance(obs, gym.wrappers.LazyFrames):
+        obs = np.array(obs)
+    return torch.as_tensor(obs, device=device).float()
+
 def preprocess_obs(obs, device=None, suite='atari'):
     if suite == 'atari':
         obs = preprocess_atari_obs(obs, device)
     elif suite == 'd4rl':
         obs = preprocess_d4rl_obs(obs, device)
+    elif suite == 'd3rl':
+        obs = preprocess_d3rl_obs(obs, device)
     else:
         raise NotImplementedError(f'Unrecognized Environment Suite: {suite}')
     return obs
@@ -199,6 +206,19 @@ def create_d4rl_env(game, render_mode=None):
     #     env = EpisodicLives(env)
     # env = gym.wrappers.FrameStack(env, frame_stack)
     # env = gym.wrappers.TimeLimit(env, max_episode_steps=time_limit)
+    return env
+
+create_d3rl_env(config['game'], 
+                                        render_mode=config['env_render_mode'], 
+                                        frame_stack=config['env_frame_stack'],
+                                        max_episode_steps=config['env_time_limit'],
+                                        max_episode_steps=config['env_time_limit'],
+                                        )
+
+def create_d3rl_env(game, render_mode=None, frame_stack=None, max_episode_steps=None):
+    env = gym.make(game, render_mode=render_mode, max_episode_steps=max_episode_steps)
+    if frame_stack is not None:  
+        env = gym.wrappers.FrameStack(env, frame_stack)
     return env
 
 
@@ -356,8 +376,6 @@ class D4RLEnvWrapper(gym.Wrapper):
                     'Leg Joint Angle (rad)', 'Foot Joint Angle (rad)', 'Top X-Velocity (m/s)', 
                     'Top Z-Velocity (m/s)', 'Top Angular Velocity (rad/s)', 'Thigh Hinge Angular Velocity (rad/s)', 
                     'Leg Hinge Angular Velocity (rad/s)', 'Foot Hinge Angular Velocity (rad/s)']
-
-            
 
 
 @torch.no_grad()
